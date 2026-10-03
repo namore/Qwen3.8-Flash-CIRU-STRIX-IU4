@@ -1,69 +1,20 @@
-# CIRU runtime v4.4.1
+# CIRU Flash IU4 v5.0.1 runtime
 
-**Vision + MTP QSA hotfix:** the source includes the fix for `qsa: cell position runs past the cell window`. [Patch, checks and rebuild instructions](docs/qualification/v4.4.1-qsa-hotfix/QSA-HOTFIX.md). Existing v4.4.1 prebuilt archives require rebuilding; weights and MTP settings are unchanged.
+Source runtime for AMD Strix Halo (gfx1151). Start with [INSTALL.md](INSTALL.md).
 
-Fixed vision + MTP. Update the complete runtime and restart the server; keep existing model files. See [update instructions](docs/RUNNING.md).
+This package retains the qualified inference source and adds public build and
+launch instructions. Compact expert weights stay resident in packed form; long
+prefill uses temporary BF16 tiles, while short expert operations use native
+four-bit integer dot products. The SSD sidecar supplies the model's n-gram/hash
+embedding table. MTP depth defaults to 3, with one request slot.
 
-The current main-branch launcher also rejects runtimes missing the v4.2 attention correction before model load. This startup check was added after the immutable v4.3.0 tag; see [runtime verification](docs/RUNNING.md#runtime-verification-in-current-launchers).
+See [source identity](SOURCE_IDENTITY.json), [LICENSE](LICENSE), and
+[third-party notices](THIRD_PARTY_NOTICES.md). All model benchmarks and weights
+are in the [model repository](https://huggingface.co/jcbtc/Qwen3.8-Flash-CIRU-STRIX-IU4).
 
-V4.3 makes the tested speculative-decoding settings the defaults: **MTP depth 3 for IU4, depth 4 for Orca, and `LLAMA_MTP_QSA_MIN_T=1` for both**. Shorter draft batches reduce discarded speculative work; the lower threshold enables sparse draft attention for small batches. The corrected v4.2 inference binaries and existing model files are retained.
+The supplied source includes prior upstream backend and kernel identifiers;
+users do not need to set those switches manually. Use the release launcher.
 
-| Model | Hermes mean score /100, passes 1 / 2 | Full-score tasks, passes 1 / 2 | Prompt tok/s | Generation tok/s |
-| --- | ---: | ---: | ---: | ---: |
-| IU4 | 95.0 / 98.5 | 17/20 / 19/20 | 548.5 | 34.74 |
-| Orca | 92.5 / 98.5 | 17/20 / 19/20 | 551.3 | 34.44 |
-
-Hermes Agent 20: two passes per model, 80 completed scenario attempts and 449 model requests, a 32-turn allowance, production sampling and native xhigh thinking. Speeds are pooled across each model's two passes; generation includes reasoning. Both hosts are 128 GB Strix Halo / gfx1151, NixOS / ROCm 10; IU4 ran on Sozo and Orca on Ciru. These are observed tuned-configuration results, not a matched Hermes speedup over v4.2. Native verifier scores are retained; the detailed report records grading limitations and Orca's memory-persistence behavior.
-
-Existing v4.2 users can update the launcher without rebuilding or downloading weights. `MTP_DEPTH` and `LLAMA_MTP_QSA_MIN_T` remain overridable; `MTP_DEPTH=6 LLAMA_MTP_QSA_MIN_T=128` restores the previous speculative defaults. Earlier runtimes must first obtain the v4.2 attention correction. Context remains 262144, batch/microbatch 8192, with F16 target/draft KV and unchanged sampling and thinking.
-
-[Detailed Hermes results](docs/qualification/v4.3.0/HERMES-RESULTS.md) | [Run and upgrade](docs/RUNNING.md) | [Release downloads](https://github.com/ciru-ai/Qwen3.8-Flash-CIRU-STRIX-IU4/releases/tag/v4.3.0)
-
-## v4.4 combined runtime
-
-Combined inference/runtime update; existing target, draft, PLE and projector files are unchanged.
-
-- Integrates MTP shortlisting, duplicate-attention cleanup, separate graph arenas, incremental QSA caching, fused Q8 gate work, masked attention tile skipping, prompt branch reuse, attention occupancy, wide-context indexing and GDN vector/decay paths.
-- Uses stock TheRock10 compiler/math with pinned pwilkin HIP/ROCr (`7dda3ac6`). MTP stays default: IU4 depth 3, Orca depth 4. Kairic Boost is opt-in (`--kairic-boost` / `KAIRIC_BOOST=1`).
-- IU4 matched control → combined: 12.96K decode **37.79 → 44.53 tok/s**; 245760-token cold decode **7.62 → 21.14 tok/s**. Control already includes v4.3 + S5/D0; these are not plain-v4.3 comparisons.
-- IU4 HE0–9: **60.35 tok/s** with MTP3, **64.07 tok/s** with opt-in Boost; one short panel per setting. HA20: **19/20 full-score tasks**, **98.5/100 arithmetic mean**, **99/100 official weighted score**.
-
-Full 256K serving defaults are retained. A separate target-only 512K prefill reached 604.65 tok/s; it does not establish 512K decode or quality. The v4.4.0 image+MTP failure is fixed in v4.4.1. Boost has no new HA20 qualification. Weight reconstruction error is unchanged.
-
-[Qualification](docs/qualification/v4.4.0/QUALIFICATION.md) · [Build](docs/BUILD_LINUX.md)
-
-## Previous v4.2.0 release
-
-V4.2 fixes selected-key attention on the small-batch fallback used by the v4.0/v4.1 engine. QSA3 remains enabled. The existing IU4 and Orca model files are reused, and long thinking and production reasoning settings are unchanged.
-
-The correction passes 48/48 independent numerical checks and completed the captured medium-effort tool-use replay on both variants. On one matched IU4 workload, decode measured 16.9% lower while prefill remained within the 5% parity band. Both mirrored comparisons agreed, but the figure is workload-specific and includes changed draft acceptance; it is not a universal or Orca speed claim.
-
-We are investigating new GPU kernels and profiling the corrected attention path to increase performance further while preserving correctness.
-
-[Patch notes and evidence](docs/qualification/v4.2.0/QUALIFICATION.md) | [Run and upgrade](docs/RUNNING.md) | [Build](docs/BUILD_LINUX.md) | [Release downloads](https://github.com/ciru-ai/Qwen3.8-Flash-CIRU-STRIX-IU4/releases/tag/v4.2.0)
-
-## Previous v4.1.0 release
-
-V4.1 enables 32-worker bulk PLE loading for the existing IU4 and Orca packages, with a 16-worker override. Model files and GPU arithmetic are unchanged. Non-Orca native 16k prefill improved 4.44%; a quick matched MTP6 check found no observed TG loss and identical paired outputs. Orca uses the same runtime; no new Orca speed claim is made.
-
-[Run and upgrade](docs/RUNNING.md) | [Build](docs/BUILD_LINUX.md) | [v4.1 validation](docs/qualification/v4.1.0/QUALIFICATION.md) | [Release downloads](https://github.com/ciru-ai/Qwen3.8-Flash-CIRU-STRIX-IU4/releases/tag/v4.1.0)
-
-## Previous v4.0.0 release
-
-The pwilkin Strix Halo reference stack now runs with the existing CIRU Qwen3.8 Flash IU4 weights and CIRUPLE1 files. On our Strix Halo host, five cold 30.8K coding prompts measured approximately **992–1,001 prompt tokens/s**; cold 65K recall measured **948 PP**. These are diagnostic serving observations, not a clean repeated before/after comparison. Model weights are unchanged.
-
-Credit for the original fast-prefill breakthrough goes to Halogen's creator, [Peonist.ai (`peonist-ai`)](https://github.com/peonist-ai/halogen-flash-server). [pwilkin](https://pwilkin.github.io/strix-halo/) reproduced that performance in an open-source llama.cpp implementation and published the kernels and configuration that CIRU adapted for these existing weights. CIRU's contribution is the compatibility integration and validation.
-
-[Qualification and measured tradeoffs](docs/qualification/v4.0.0/QUALIFICATION.md) · [Run](docs/RUNNING.md) · [Build](docs/BUILD_LINUX.md) · [Model download](https://huggingface.co/jcbtc/Qwen3.8-Flash-CIRU-STRIX-IU4/tree/v4.0.0)
-
-The text profile uses context 262144, batch/microbatch 8192, F16 target/draft KV, MTP 6, one slot and a 1024 MiB prompt cache. It passed the 15-request serving panel, cache/recall checks and 261888-input+128-output capacity check. The original standalone coding score is 7/8; a uniform prompt-provided-import rescore of the same answers is 8/8. Both scopes and the original failure are retained. Decode gains are workload-dependent; full-context decode remains slow.
-
-The historical v4.0 vision smoke used the existing projector with MTP disabled; current launcher behavior is documented in docs/RUNNING.md. The reused inference binaries and UI application assets passed UI, OpenAI chat and two image smoke checks; v4 updates the displayed UI version. The tested binary requires its recorded NixOS/ROCm10 dependencies. Other hosts should build this matching source. The included external UI matches the engine; keep the complete executable/shared-library set together.
-
-The integration retains the CIRUPLE1 pager, adds type-correct Q4_1 expert paths to the reference kernels and repairs MTP pending-state and external-draft parameter handling. Some reference optimizations remain unavailable for incompatible quantization types. The remaining gap to the author's different reference weights is not fully attributed.
-
-Thanks to [pwilkin](https://pwilkin.github.io/strix-halo/), Qwen, ggml-org, AMD/ROCm and all contributors credited in [provenance](docs/PROVENANCE.md), [upstream README](docs/UPSTREAM-README.md) and [third-party notices](THIRD_PARTY_NOTICES.md). Runtime code retains MIT/component licenses; model artifacts use Qwen Community License 1.0. Previous v3 qualification remains under docs/qualification/v3.0.0 and the v3.0.0 tag.
-
-## Community model fidelity benchmark
-
-Test your Qwen3.8 Flash GGUF against the frozen BF16 reference and plot it beside CIRU IU4 and Agention Q4/Q5: [runner, dataset, Python chart source and instructions](benchmarks/fidelity/README.md). This is numerical fidelity, not HermesAgent-20.
+v5.0.1 restores the image/MTP QSA position-gap correction. Image input
+is enabled by default for MODEL_RELEASE=5.0 with the matching projector;
+set ENABLE_VISION=0 for text-only operation. Model weights are unchanged.

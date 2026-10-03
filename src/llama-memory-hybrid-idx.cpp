@@ -922,9 +922,21 @@ bool llama_memory_hybrid_idx::qsa_prefix_matches(const llama_ubatch & u) const {
 }
 
 bool llama_memory_hybrid_idx::qsa_fast(int il, const llama_ubatch & u) const {
-    return qsa_prefix_matches(u) && u.n_tokens <= 8 && qsa_keys.at(il) &&
+    static const int max_tokens = [] {
+        const char * value = getenv("CIRU_QSA_INDEXER_MAX");
+        return value ? std::max(0, std::min(512, atoi(value))) : 8;
+    }();
+    const bool fast = qsa_prefix_matches(u) && int(u.n_tokens) <= max_tokens && qsa_keys.at(il) &&
         qsa_ready.at(il) >= int64_t(qsa_prefix.previous_size/4) &&
         qsa_prefix.cells.size()/4 >= (u.n_tokens+3)/4+1;
+    static unsigned trace_count = 0;
+    if (getenv("CIRU_QSA_INDEXER_TRACE") && u.n_tokens > 8 && u.n_tokens <= 512 && trace_count++ < 96) {
+        fprintf(stderr, "CIRU_INDEXER_PATH layer=%d tokens=%u fast=%d limit=%d prepared=%zu total=%zu\n",
+                il, u.n_tokens, int(fast), max_tokens,
+                fast ? size_t((u.n_tokens+3)/4+1) : qsa_prefix.cells.size()/4,
+                qsa_prefix.cells.size()/4);
+    }
+    return fast;
 }
 
 ggml_tensor * llama_memory_hybrid_idx::qsa_cache(ggml_context * ctx, int il, int64_t blocks) const {
