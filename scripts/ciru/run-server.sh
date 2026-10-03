@@ -208,6 +208,16 @@ args=(
     --slots
 )
 
+if [[ -n "${SSD_CACHE_DIR:-}" ]]; then
+    args+=(
+        --cache-ssd-dir "${SSD_CACHE_DIR}"
+        --cache-ssd-maxsize "${SSD_CACHE_MIB:-32768}"
+    )
+    if [[ -n "${SSD_CACHE_PREFIX_ADVANTAGE:-}" ]]; then
+        args+=(--cache-ssd-prefix-advantage "${SSD_CACHE_PREFIX_ADVANTAGE}")
+    fi
+fi
+
 # External assets preserve the Web UI without rebuilding the inference binary.
 enable_ui="${ENABLE_UI:-1}"
 ui_dir="${UI_DIR:-${repo_root}/ui}"

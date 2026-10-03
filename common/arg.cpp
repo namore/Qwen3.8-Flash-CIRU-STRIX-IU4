@@ -1718,6 +1718,33 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_CACHE_RAM").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
     add_opt(common_arg(
+        {"--cache-ssd-dir"}, "DIR",
+        "directory for persistent SSD prompt cache (default: none)",
+        [](common_params & params, const std::string & value) {
+            params.cache_ssd_dir = value;
+        }
+    ).set_env("LLAMA_ARG_CACHE_SSD_DIR").set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--cache-ssd-maxsize"}, "N",
+        string_format("maximum SSD prompt cache size in MiB (default: %d)", params.cache_ssd_maxsize_mib),
+        [](common_params & params, int value) {
+            if (value <= 0) {
+                throw std::invalid_argument("cache-ssd-maxsize must be positive");
+            }
+            params.cache_ssd_maxsize_mib = value;
+        }
+    ).set_env("LLAMA_ARG_CACHE_SSD_MAXSIZE").set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--cache-ssd-prefix-advantage"}, "N",
+        "minimum token advantage required to prefer SSD cache (default: 8192)",
+        [](common_params & params, int value) {
+            if (value <= 0) {
+                throw std::invalid_argument("cache-ssd-prefix-advantage must be positive");
+            }
+            params.cache_ssd_prefix_advantage = value;
+        }
+    ).set_env("LLAMA_ARG_CACHE_SSD_PREFIX_ADVANTAGE").set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
         {"-kvu", "--kv-unified"},
         {"-no-kvu", "--no-kv-unified"},
         "use single unified KV buffer shared across all sequences (default: enabled if number of slots is auto)",

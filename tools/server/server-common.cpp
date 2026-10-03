@@ -681,6 +681,25 @@ void server_tokens::keep_first(size_t n) {
     tokens.resize(n);
 }
 
+server_tokens server_tokens::placeholder_prefix(size_t n) const {
+    GGML_ASSERT(n <= tokens.size());
+    server_tokens result;
+    result.has_mtmd = has_mtmd;
+    for (size_t i = 0; i < n;) {
+        if (tokens[i] == LLAMA_TOKEN_NULL) {
+            const auto & chunk = find_chunk(i);
+            const size_t count = mtmd_input_chunk_get_n_tokens(chunk.get());
+            GGML_ASSERT(count > 0 && count <= n - i);
+            result.push_back_placeholder(chunk.get());
+            i += count;
+        } else {
+            result.push_back(tokens[i]);
+            ++i;
+        }
+    }
+    return result;
+}
+
 std::string server_tokens::detokenize(const llama_context * ctx, bool special) const {
     llama_tokens text_tokens;
     text_tokens.reserve(tokens.size());

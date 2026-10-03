@@ -2,6 +2,7 @@
 
 #include "common.h"
 #include "llama.h"
+#include "server-ssd-cache.h"
 
 #include <string>
 #include <unordered_set>
@@ -496,6 +497,7 @@ struct server_task_result_metrics : server_task_result {
     int n_tasks_deferred = 0;
 
     server_metrics metrics;
+    server_ssd_cache_stats ssd_cache;
 
     virtual json to_json() override;
 

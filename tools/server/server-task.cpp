@@ -1559,6 +1559,30 @@ std::string server_task_result_metrics::to_metrics() {
             "Speculative: Total draft tokens accepted by the target model",
             (double) metrics.n_draft_accepted
         }, {
+            "ssd_cache_lookup_hits_total",
+            "SSD prompt cache metadata lookup hits",
+            (double) ssd_cache.lookup_hits
+        }, {
+            "ssd_cache_lookup_misses_total",
+            "SSD prompt cache metadata lookup misses",
+            (double) ssd_cache.lookup_misses
+        }, {
+            "ssd_cache_admissions_total",
+            "SSD prompt cache snapshots admitted",
+            (double) ssd_cache.admissions
+        }, {
+            "ssd_cache_evictions_total",
+            "SSD prompt cache snapshots evicted",
+            (double) ssd_cache.evictions
+        }, {
+            "ssd_cache_write_failures_total",
+            "SSD prompt cache write failures",
+            (double) ssd_cache.write_failures
+        }, {
+            "ssd_cache_busy_drops_total",
+            "SSD prompt cache candidates dropped while the worker is busy",
+            (double) ssd_cache.busy_drops
+        }, {
             "spec_decode_num_drafts_total",
             "Speculative: Total speculative decoding verification steps",
             (double) metrics.n_draft_verif_steps
@@ -1582,6 +1606,22 @@ std::string server_task_result_metrics::to_metrics() {
             "requests_deferred",
             "Number of requests deferred",
             (double) n_tasks_deferred
+        }, {
+            "ssd_cache_bytes",
+            "SSD prompt cache bytes used",
+            (double) ssd_cache.bytes
+        }, {
+            "ssd_cache_entries",
+            "SSD prompt cache entries",
+            (double) ssd_cache.entries
+        }, {
+            "ssd_cache_capture_seconds",
+            "Total SSD prompt cache capture time",
+            (double) ssd_cache.capture_us / 1.e6
+        }, {
+            "ssd_cache_restore_seconds",
+            "Total SSD prompt cache restore time",
+            (double) ssd_cache.restore_us / 1.e6
         }, {
             "n_busy_slots_per_decode",
             "Average number of busy slots per llama_decode() call",

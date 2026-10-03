@@ -203,6 +203,9 @@ struct common_speculative_impl {
     // (optional) serialize/restore per-seq internal state (e.g. eagle3's deferred boundary).
     virtual bool get_state(llama_seq_id /*seq_id*/, std::vector<uint8_t> & /*data*/) const { return false; }
     virtual void set_state(llama_seq_id /*seq_id*/, const std::vector<uint8_t> & /*data*/) {}
+    virtual common_speculative_ssd_state_capability ssd_state_capability() const { return {}; }
+    virtual bool capture_ssd_state(llama_seq_id /*seq_id*/, std::vector<uint8_t> & /*data*/) const { return false; }
+    virtual bool restore_ssd_state(llama_seq_id /*seq_id*/, const std::vector<uint8_t> & /*data*/) { return false; }
 };
 
 struct common_speculative_impl_draft_simple : public common_speculative_impl {
@@ -1356,6 +1359,64 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
     }
 };
 
+bool common_speculative_mtp_ssd_state_capture(
+        llama_pos pending_h_pos,
+        llama_pos pending_image_pos,
+        const std::vector<float> & pending_h,
+        std::vector<uint8_t> & data) {
+    static constexpr uint32_t magic = 0x4d545033;
+    if (pending_h.empty() || pending_h.size() > UINT32_MAX || pending_h_pos < -1 ||
+            pending_image_pos < -1 || pending_image_pos > pending_h_pos ||
+            pending_h.size() > (SIZE_MAX - 2 * sizeof(uint32_t) - 2 * sizeof(llama_pos)) / sizeof(float)) {
+        data.clear();
+        return false;
+    }
+
+    const uint32_t width = uint32_t(pending_h.size());
+    const size_t row_bytes = pending_h.size() * sizeof(float);
+    data.resize(2 * sizeof(uint32_t) + 2 * sizeof(llama_pos) + row_bytes);
+    uint8_t * dst = data.data();
+    std::memcpy(dst, &magic, sizeof(magic)); dst += sizeof(magic);
+    std::memcpy(dst, &width, sizeof(width)); dst += sizeof(width);
+    std::memcpy(dst, &pending_h_pos, sizeof(pending_h_pos)); dst += sizeof(pending_h_pos);
+    std::memcpy(dst, &pending_image_pos, sizeof(pending_image_pos)); dst += sizeof(pending_image_pos);
+    std::memcpy(dst, pending_h.data(), row_bytes);
+    return true;
+}
+
+bool common_speculative_mtp_ssd_state_restore(
+        uint32_t n_embd,
+        const std::vector<uint8_t> & data,
+        llama_pos & pending_h_pos,
+        llama_pos & pending_image_pos,
+        std::vector<float> & pending_h) {
+    static constexpr uint32_t magic_expected = 0x4d545033;
+    const size_t fixed_size = 2 * sizeof(uint32_t) + 2 * sizeof(llama_pos);
+    if (n_embd == 0 || n_embd > SIZE_MAX / sizeof(float) || data.size() != fixed_size + size_t(n_embd) * sizeof(float)) {
+        return false;
+    }
+
+    const uint8_t * src = data.data();
+    uint32_t magic = 0;
+    uint32_t width = 0;
+    llama_pos pos = -1;
+    llama_pos image_pos = -1;
+    std::memcpy(&magic, src, sizeof(magic)); src += sizeof(magic);
+    std::memcpy(&width, src, sizeof(width)); src += sizeof(width);
+    std::memcpy(&pos, src, sizeof(pos)); src += sizeof(pos);
+    std::memcpy(&image_pos, src, sizeof(image_pos)); src += sizeof(image_pos);
+    if (magic != magic_expected || width != n_embd || pos < -1 || image_pos < -1 || image_pos > pos) {
+        return false;
+    }
+
+    std::vector<float> restored(n_embd);
+    std::memcpy(restored.data(), src, restored.size() * sizeof(float));
+    pending_h_pos = pos;
+    pending_image_pos = image_pos;
+    pending_h = std::move(restored);
+    return true;
+}
+
 struct common_speculative_impl_draft_mtp : public common_speculative_impl {
     common_params_speculative_draft params; // reuses the draft-model params slot (ctx_tgt/ctx_dft)
 
@@ -1973,41 +2034,58 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
         if (!pending_state_enabled || seq_id < 0 || seq_id >= (llama_seq_id) n_seq) {
             return false;
         }
-        static constexpr uint32_t magic = 0x4d545033; // MTP3: positions + width + hidden row
-        const uint32_t width = (uint32_t) n_embd;
-        const size_t row_bytes = (size_t) n_embd * sizeof(float);
-        data.resize(sizeof(magic) + sizeof(width) + 2 * sizeof(llama_pos) + row_bytes);
-        uint8_t * dst = data.data();
-        std::memcpy(dst, &magic, sizeof(magic)); dst += sizeof(magic);
-        std::memcpy(dst, &width, sizeof(width)); dst += sizeof(width);
-        std::memcpy(dst, &pending_h_pos[seq_id], sizeof(llama_pos)); dst += sizeof(llama_pos);
-        std::memcpy(dst, &pending_image_pos[seq_id], sizeof(llama_pos)); dst += sizeof(llama_pos);
-        std::memcpy(dst, pending_h[seq_id].data(), row_bytes);
-        return true;
+        return common_speculative_mtp_ssd_state_capture(
+            pending_h_pos[seq_id], pending_image_pos[seq_id], pending_h[seq_id], data);
     }
 
     void set_state(llama_seq_id seq_id, const std::vector<uint8_t> & data) override {
         if (!pending_state_enabled || seq_id < 0 || seq_id >= (llama_seq_id) n_seq) {
             return;
         }
+        llama_pos pos = -1;
+        llama_pos image_pos = -1;
+        std::vector<float> restored;
+        const bool valid = common_speculative_mtp_ssd_state_restore(
+            uint32_t(n_embd), data, pos, image_pos, restored);
         reset_pending_state(seq_id);
-        const size_t row_bytes = (size_t) n_embd * sizeof(float);
-        if (data.size() != 2 * sizeof(uint32_t) + 2 * sizeof(llama_pos) + row_bytes) {
-            return;
-        }
-        const uint8_t * src = data.data();
-        uint32_t magic = 0, width = 0;
-        llama_pos pos = -1, image_pos = -1;
-        std::memcpy(&magic, src, sizeof(magic)); src += sizeof(magic);
-        std::memcpy(&width, src, sizeof(width)); src += sizeof(width);
-        std::memcpy(&pos, src, sizeof(pos)); src += sizeof(pos);
-        std::memcpy(&image_pos, src, sizeof(image_pos)); src += sizeof(image_pos);
-        if (magic != 0x4d545033 || width != (uint32_t) n_embd || pos < -1 || image_pos < -1 || image_pos > pos) {
+        if (!valid) {
             return;
         }
         pending_h_pos[seq_id] = pos;
         pending_image_pos[seq_id] = image_pos;
-        std::memcpy(pending_h[seq_id].data(), src, row_bytes);
+        pending_h[seq_id] = std::move(restored);
+    }
+
+    common_speculative_ssd_state_capability ssd_state_capability() const override {
+        if (!pending_state_enabled) {
+            return {};
+        }
+        return {
+            /* .supported = */ true,
+            /* .schema_version = */ 3,
+            /* .kv_topology = */ is_mem_shared ? COMMON_SPECULATIVE_SSD_KV_TARGET_SHARED : COMMON_SPECULATIVE_SSD_KV_SEPARATE,
+        };
+    }
+
+    bool capture_ssd_state(llama_seq_id seq_id, std::vector<uint8_t> & data) const override {
+        return get_state(seq_id, data);
+    }
+
+    bool restore_ssd_state(llama_seq_id seq_id, const std::vector<uint8_t> & data) override {
+        if (!pending_state_enabled || seq_id < 0 || seq_id >= (llama_seq_id) n_seq) {
+            return false;
+        }
+        llama_pos pos = -1;
+        llama_pos image_pos = -1;
+        std::vector<float> restored;
+        if (!common_speculative_mtp_ssd_state_restore(uint32_t(n_embd), data, pos, image_pos, restored)) {
+            return false;
+        }
+        reset_pending_state(seq_id);
+        pending_h_pos[seq_id] = pos;
+        pending_image_pos[seq_id] = image_pos;
+        pending_h[seq_id] = std::move(restored);
+        return true;
     }
 };
 
@@ -3196,6 +3274,28 @@ void common_speculative_set_state(common_speculative * spec, llama_seq_id seq_id
     for (auto & impl : spec->impls) {
         impl->set_state(seq_id, data);
     }
+}
+
+common_speculative_ssd_state_capability common_speculative_get_ssd_state_capability(const common_speculative * spec) {
+    if (spec == nullptr || spec->impls.size() != 1) {
+        return {};
+    }
+    return spec->impls.front()->ssd_state_capability();
+}
+
+bool common_speculative_capture_ssd_state(const common_speculative * spec, llama_seq_id seq_id, std::vector<uint8_t> & data) {
+    data.clear();
+    if (spec == nullptr || spec->impls.size() != 1) {
+        return false;
+    }
+    return spec->impls.front()->capture_ssd_state(seq_id, data);
+}
+
+bool common_speculative_restore_ssd_state(common_speculative * spec, llama_seq_id seq_id, const std::vector<uint8_t> & data) {
+    if (spec == nullptr || spec->impls.size() != 1) {
+        return false;
+    }
+    return spec->impls.front()->restore_ssd_state(seq_id, data);
 }
 
 void common_speculative_print_stats(const common_speculative * spec) {

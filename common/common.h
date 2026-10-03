@@ -636,7 +636,10 @@ struct common_params {
     int32_t kv_unified_per_slot = 0;     // max context per parallel slot; 0 = unset
     int32_t checkpoint_min_step = 8192;  // minimum spacing between context checkpoints
     int32_t cache_ram_mib       = 8192;  // -1 = no limit, 0 - disable, 1 = 1 MiB, etc.
+    int32_t cache_ssd_maxsize_mib      = 100*1024; // maximum SSD prompt cache size in MiB
+    int32_t cache_ssd_prefix_advantage = 8192;
 
+    std::string cache_ssd_dir;
     std::string hostname      = "127.0.0.1";
     std::string public_path   = "";                                                                         // NOLINT
     std::string api_prefix    = "";                                                                         // NOLINT

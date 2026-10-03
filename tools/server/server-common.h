@@ -212,6 +212,10 @@ public:
 
     llama_tokens get_text_tokens() const;
 
+    bool has_media() const {
+        return !map_idx_to_media.empty() || std::find(tokens.begin(), tokens.end(), LLAMA_TOKEN_NULL) != tokens.end();
+    }
+
     std::vector<char> serialize() const;
     static server_tokens deserialize(const llama_tokens & packed, bool has_mtmd);
 
@@ -228,6 +232,7 @@ public:
     }
 
     void keep_first(size_t n);
+    server_tokens placeholder_prefix(size_t n) const;
 
     std::string detokenize(const llama_context * ctx, bool special) const;
 

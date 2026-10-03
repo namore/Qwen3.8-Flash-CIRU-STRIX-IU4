@@ -5,6 +5,7 @@
 #include "server-task.h"
 #include "server-queue.h"
 #include "server-schema.h"
+#include "server-ssd-cache.h"
 #include "server-stream.h"
 
 #include "build-info.h"
@@ -295,6 +296,7 @@ struct server_slot {
     slot_state state = SLOT_STATE_IDLE;
 
     server_prompt prompt;
+    server_ssd_cache_handle ssd_cache_candidate;
 
     bool prompt_save(server_prompt_cache & prompt_cache) const {
         if (prompt.tokens.size() == 0) {
@@ -369,6 +371,7 @@ struct server_slot {
     void reset() {
         SLT_DBG(*this, "%s", "\n");
 
+        ssd_cache_candidate = {};
         spec_is_replay = false;
 
         last_nl_pos    = 0;
@@ -894,6 +897,7 @@ private:
     common_context_seq_rm_type ctx_dft_seq_rm_type = COMMON_CONTEXT_SEQ_RM_TYPE_NO;
 
     common_speculative_ptr spec;
+    common_speculative_ssd_state_capability ssd_spec_capability;
 
     bool add_bos_token = true;
 
@@ -913,6 +917,7 @@ private:
     int n_empty_consecutive = 0;
 
     std::unique_ptr<server_prompt_cache> prompt_cache;
+    std::unique_ptr<server_ssd_prompt_cache> prompt_cache_ssd;
 
     server_metrics metrics;
 
@@ -936,6 +941,7 @@ private:
     int64_t t_last_load_progress_ms = 0;
 
     void destroy() {
+        prompt_cache_ssd.reset();
         spec.reset();
         spec_init.reset();
 
@@ -1011,6 +1017,9 @@ private:
         const bool is_resume = sleeping;
 
         params_base = params;
+        if (params_base.cache_ssd_prefix_advantage == 0) {
+            params_base.cache_ssd_prefix_advantage = 8192;
+        }
         const auto output_limits = server_output_limits(params_base);
         params_base.n_outputs_max = output_limits.total;
         params_base.n_outputs_max_per_seq = output_limits.per_seq;
@@ -1284,6 +1293,13 @@ private:
             return false;
         }
 
+        ssd_spec_capability = common_speculative_get_ssd_state_capability(spec.get());
+#if defined(LLAMA_SERVER_SSD_CACHE_TESTING)
+        if (spec_mtp && std::getenv("LLAMA_SSD_CACHE_TEST_FORCE_UNSUPPORTED_MTP")) {
+            ssd_spec_capability = {};
+        }
+#endif
+
         for (int i = 0; i < params_base.n_parallel; i++) {
             server_slot & slot = slots[i];
 
@@ -1361,6 +1377,49 @@ private:
             SRV_TRC("%s", "prompt cache is disabled - use `--cache-ram N` to enable it\n");
         }
         SRV_TRC("%s", "for more info see https://github.com/ggml-org/llama.cpp/pull/16391\n");
+
+        if (!params_base.cache_ssd_dir.empty()) {
+            if (spec_mtp && spec && !ssd_spec_capability.supported) {
+                SRV_WRN("%s", "SSD prompt cache disabled: --cache-ssd-dir was requested, but draft-mtp does not support complete persistent state snapshots for this model/configuration; MTP inference remains enabled\n");
+            } else {
+                server_ssd_cache_config cache_config;
+                cache_config.directory = params_base.cache_ssd_dir;
+                cache_config.max_bytes = uint64_t(params_base.cache_ssd_maxsize_mib) * 1024 * 1024;
+                cache_config.prefix_advantage = params_base.cache_ssd_prefix_advantage;
+
+                server_ssd_cache_compatibility cache_compatibility;
+                std::vector<std::string> model_files = { params_base.model.path };
+                if (!params_base.ple_sidecar.empty()) {
+                    const std::filesystem::path ple_dir(params_base.ple_sidecar);
+                    model_files.push_back((ple_dir / "ple.manifest.json").string());
+                    model_files.push_back((ple_dir / "ple.payload.bin").string());
+                    model_files.push_back((ple_dir / "ple.scale.bf16").string());
+                }
+                cache_compatibility.model = server_ssd_cache_files_identity(model_files);
+                cache_compatibility.adapters = server_ssd_cache_adapter_identity(params_base.lora_adapters);
+                if (!params_base.mmproj.path.empty()) {
+                    cache_compatibility.projector = server_ssd_cache_file_identity(params_base.mmproj.path);
+                }
+                cache_compatibility.image_min_tokens = params_base.image_min_tokens;
+                cache_compatibility.image_max_tokens = params_base.image_max_tokens;
+                cache_compatibility.projector_settings = params_base.mmproj_use_gpu ? 1 : 0;
+                if (ssd_spec_capability.supported && !params_base.speculative.draft.mparams.path.empty()) {
+                    cache_compatibility.draft_model = server_ssd_cache_file_identity(params_base.speculative.draft.mparams.path);
+                }
+                cache_compatibility.speculative_state_version = ssd_spec_capability.schema_version;
+                cache_compatibility.speculative_kv_topology = ssd_spec_capability.kv_topology;
+                cache_compatibility.n_ctx = llama_n_ctx(ctx_tgt);
+                cache_compatibility.n_batch = llama_n_batch(ctx_tgt);
+                cache_compatibility.kv_type = uint32_t(params_base.cache_type_k) |
+                    (uint32_t(params_base.cache_type_v) << 8) |
+                    (uint32_t(params_base.speculative.draft.cache_type_k) << 16) |
+                    (uint32_t(params_base.speculative.draft.cache_type_v) << 24);
+                prompt_cache_ssd = std::make_unique<server_ssd_prompt_cache>(cache_config, cache_compatibility);
+                if (!prompt_cache_ssd->enabled()) {
+                    prompt_cache_ssd.reset();
+                }
+            }
+        }
 
         if (params_base.n_ctx_checkpoints > 0) {
             SRV_TRC("context checkpoints enabled, max = %d, min spacing = %d\n",
@@ -1634,23 +1693,27 @@ private:
         }
 
         if (ret) {
-            update_cache = update_cache && prompt_cache;
-
             // cache prompts only for completion tasks
             update_cache = update_cache && task.type == SERVER_TASK_TYPE_COMPLETION;
+
+            ret->ssd_cache_candidate = (!spec || ssd_spec_capability.supported) && prompt_cache_ssd
+                ? prompt_cache_ssd->lookup(task.tokens)
+                : server_ssd_cache_handle {};
+
+            update_cache = update_cache && (prompt_cache || prompt_cache_ssd);
 
             if (update_cache) {
                 SRV_TRC("%s", "updating prompt cache\n");
 
                 const int64_t t_start = ggml_time_us();
 
-                ret->prompt_save(*prompt_cache);
-
-                if (!ret->prompt_load(*prompt_cache, task.tokens)) {
-                    ret->prompt_clear();
+                if (prompt_cache) {
+                    ret->prompt_save(*prompt_cache);
+                    if (!ret->prompt_load(*prompt_cache, task.tokens)) {
+                        ret->prompt_clear();
+                    }
+                    prompt_cache->update();
                 }
-
-                prompt_cache->update();
 
                 SRV_TRC("prompt cache update took %.2f ms\n", (ggml_time_us() - t_start) / 1000.0);
             }
@@ -2514,6 +2577,9 @@ private:
                     res->n_processing_slots  = n_processing_slots;
                     res->n_tasks_deferred    = queue_tasks.queue_tasks_deferred_size();
                     res->metrics             = metrics;
+                    if (prompt_cache_ssd) {
+                        res->ssd_cache = prompt_cache_ssd->stats();
+                    }
 
                     if (task.metrics_reset_bucket) {
                         metrics.reset_bucket();
@@ -3436,6 +3502,23 @@ private:
                                     }
                                 }
                             }
+
+                            if (slot.task->params.cache_prompt && slot.ssd_cache_candidate && prompt_cache_ssd &&
+                                    server_ssd_cache_should_restore(
+                                        n_past, n_past, slot.ssd_cache_candidate.n_tokens,
+                                        params_base.cache_ssd_prefix_advantage)) {
+                                GGML_ASSERT(slot.ssd_cache_candidate.n_tokens < input_tokens.size());
+
+                                const auto ssd = slot.ssd_cache_candidate;
+                                auto prefix = input_tokens.placeholder_prefix(ssd.n_tokens);
+                                slot.prompt_clear();
+                                if (prompt_cache_ssd->restore(ssd, ctx_tgt, ctx_dft, spec.get(), slot.id)) {
+                                    slot.prompt.tokens = std::move(prefix);
+                                    n_past = ssd.n_tokens;
+                                    SRV_INF("restored SSD prompt cache entry %" PRIu64 " (%u tokens)\n", ssd.id, ssd.n_tokens);
+                                }
+                            }
+                            slot.ssd_cache_candidate = {};
                         }
 
                         // [TAG_PROMPT_LOGITS]
@@ -3841,6 +3924,15 @@ private:
                 slot.task->params.sampling.preserved_tokens.find(token) != slot.task->params.sampling.preserved_tokens.end();
         };
 
+        auto enter_ssd_cache = [&](server_slot & slot) {
+            if (prompt_cache_ssd && (!spec || ssd_spec_capability.supported) && slot.task &&
+                    slot.task->params.cache_prompt && !slot.spec_is_replay &&
+                    !slot.prompt.tokens.empty() &&
+                    (!slot.task->tokens.has_media() || slot.state != SLOT_STATE_PROCESSING_PROMPT)) {
+                prompt_cache_ssd->enter(slot.prompt.tokens, ctx_tgt, ctx_dft, spec.get(), slot.id);
+            }
+        };
+
         iterate(slots, [&](server_slot & slot) {
             // optionally send prompt processing progress
             if (slot.state == SLOT_STATE_PROCESSING_PROMPT || slot.state == SLOT_STATE_DONE_PROMPT) {
@@ -3878,6 +3970,7 @@ private:
                 if (slot.can_speculate()) {
                     common_speculative_begin(spec.get(), slot.id, slot.prompt.tokens.get_text_tokens());
                 }
+                if (slot.task->tokens.has_media()) enter_ssd_cache(slot);
             } else if (slot.state != SLOT_STATE_GENERATING) {
                 return;
             }
@@ -3923,6 +4016,7 @@ private:
 
             if (!process_token(result, slot)) {
                 // release slot because of stop condition
+                enter_ssd_cache(slot);
                 slot.print_timings();
                 send_final_response(slot);
                 slot.release();
@@ -4049,6 +4143,7 @@ private:
                 slot.stats.n_gen += 1;
 
                 if (!process_token(result, slot)) {
+                    enter_ssd_cache(slot);
                     slot.print_timings();
                     send_final_response(slot);
                     slot.release();
@@ -4061,6 +4156,12 @@ private:
 
             SLT_DBG(slot, "accepted %d/%d draft tokens, new n_tokens = %d\n", (int) n_accepted, (int) n_draft, slot.prompt.n_tokens());
         });
+
+        for (auto & slot : slots) {
+            if (slot.is_processing()) {
+                enter_ssd_cache(slot);
+            }
+        }
     }
 
     // context size of a single slot, capped by --kv-unified-per-slot and by the training context of the model

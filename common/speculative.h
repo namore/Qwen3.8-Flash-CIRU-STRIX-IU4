@@ -5,6 +5,30 @@
 
 struct common_speculative;
 
+enum common_speculative_ssd_kv_topology {
+    COMMON_SPECULATIVE_SSD_KV_NONE,
+    COMMON_SPECULATIVE_SSD_KV_SEPARATE,
+    COMMON_SPECULATIVE_SSD_KV_TARGET_SHARED,
+};
+
+struct common_speculative_ssd_state_capability {
+    bool supported = false;
+    uint32_t schema_version = 0;
+    common_speculative_ssd_kv_topology kv_topology = COMMON_SPECULATIVE_SSD_KV_NONE;
+};
+
+bool common_speculative_mtp_ssd_state_capture(
+        llama_pos pending_h_pos,
+        llama_pos pending_image_pos,
+        const std::vector<float> & pending_h,
+        std::vector<uint8_t> & data);
+bool common_speculative_mtp_ssd_state_restore(
+        uint32_t n_embd,
+        const std::vector<uint8_t> & data,
+        llama_pos & pending_h_pos,
+        llama_pos & pending_image_pos,
+        std::vector<float> & pending_h);
+
 // comma separated list the provided types
 std::string common_speculative_type_name_str(const std::vector<enum common_speculative_type> & types);
 
@@ -88,6 +112,10 @@ void common_speculative_accept(common_speculative * spec, llama_seq_id, uint16_t
 // (optional) get/set internal state
 bool common_speculative_get_state(common_speculative * spec, llama_seq_id seq_id, std::vector<uint8_t> & data);
 void common_speculative_set_state(common_speculative * spec, llama_seq_id seq_id, const std::vector<uint8_t> & data);
+
+common_speculative_ssd_state_capability common_speculative_get_ssd_state_capability(const common_speculative * spec);
+bool common_speculative_capture_ssd_state(const common_speculative * spec, llama_seq_id seq_id, std::vector<uint8_t> & data);
+bool common_speculative_restore_ssd_state(common_speculative * spec, llama_seq_id seq_id, const std::vector<uint8_t> & data);
 
 // print statistics about the speculative decoding
 void common_speculative_print_stats(const common_speculative * spec);

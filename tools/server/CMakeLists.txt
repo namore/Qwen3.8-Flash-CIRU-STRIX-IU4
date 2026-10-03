@@ -31,6 +31,8 @@ add_library(${TARGET} STATIC
     server-mcp.h
     server-schema.cpp
     server-schema.h
+    server-ssd-cache.cpp
+    server-ssd-cache.h
 )
 
 if (BUILD_SHARED_LIBS)
@@ -40,6 +42,14 @@ endif()
 target_include_directories(${TARGET} PRIVATE ../mtmd)
 target_include_directories(${TARGET} PRIVATE ${CMAKE_SOURCE_DIR})
 target_link_libraries(${TARGET} PUBLIC llama-common mtmd ${CMAKE_THREAD_LIBS_INIT})
+
+if (LLAMA_BUILD_TESTS)
+    target_compile_definitions(server-context PRIVATE LLAMA_SERVER_SSD_CACHE_TESTING)
+    add_executable(test-server-ssd-cache tests/test-ssd-cache.cpp)
+    target_compile_definitions(test-server-ssd-cache PRIVATE LLAMA_SERVER_SSD_CACHE_TESTING)
+    target_link_libraries(test-server-ssd-cache PRIVATE server-context)
+    add_test(NAME test-server-ssd-cache COMMAND test-server-ssd-cache)
+endif()
 
 if (LLAMA_SERVER_PCH)
     target_precompile_headers(${TARGET} PRIVATE ${CMAKE_SOURCE_DIR}/common/common.h)
